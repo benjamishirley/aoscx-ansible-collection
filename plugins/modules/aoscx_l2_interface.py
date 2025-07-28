@@ -329,6 +329,42 @@ from ansible_collections.arubanetworks.aoscx.plugins.module_utils.aoscx_pyaoscx 
     get_pyaoscx_session,
 )
 
+from collections.abc import Iterable
+
+def serialize_value(value, key=None):
+
+    # if key == "port_access_onboarding_precedence":
+    #     # Dict wie {"1": "aaa", "2": "device-profile"} → Liste
+    #     if isinstance(value, dict):
+    #         # Sortiert nach numerischem Schlüssel
+    #         return [value[k] for k in sorted(value.keys(), key=int)]
+    #     return value  # Wenn bereits Liste
+
+
+    if key == "vlan_mode":
+        vlan_mode_map = {
+            "native-untagged": "trunk",
+            "native-tagged": "trunk"
+        }
+        return vlan_mode_map.get(value, value)
+
+    if isinstance(value, dict):
+        # Recursively serialize dict values
+        return {k: serialize_value(v, k) for k, v in value.items()}
+
+    if isinstance(value, list):
+        return [serialize_value(v, key) for v in value]
+
+    if hasattr(value, "vlan_id"):
+        return str(value.vlan_id)
+    if hasattr(value, "id"):
+        return str(value.id)
+
+    if callable(value):
+        return None
+
+    return value
+
 
 def get_argument_spec():
     module_args = {
@@ -434,8 +470,31 @@ def get_argument_spec():
             "required": False,
             "default": None,
         },
+
+    ## New Specs
+        # "port_access_onboarding_precedence": {
+        #     "type": "list",
+        #     "elements": "str",
+        #     "choices": ["device-profile", "aaa"]
+        # }
+            
+        "port_access_onboarding_precedence": {
+            "type": "dict",
+            "default": None,
+            "required": False,
+        },
+        
+        "enforce_vlan_trunks": {
+            "type": "bool",
+            "default": False,
+            "required": False,
+        },
     }
     return module_args
+
+
+
+IGNORED_DIFF_KEYS = ["state", "interface", "enforce_vlan_trunks"]
 
 
 def main():
@@ -443,16 +502,23 @@ def main():
         argument_spec=get_argument_spec(), supports_check_mode=True
     )
 
-    result = dict(changed=False)
+    result = dict(changed=False, diff={})
 
-    if ansible_module.check_mode:
-        ansible_module.exit_json(**result)
+    # if ansible_module.check_mode:
+    #     ansible_module.exit_json(**result)
 
     interface_name = ansible_module.params["interface"]
     description = ansible_module.params["description"]
     vlan_mode = ansible_module.params["vlan_mode"]
     vlan_access = ansible_module.params["vlan_access"]
-    vlan_trunks = ansible_module.params["vlan_trunks"]
+
+    ## Für den Vergleich im check mode wird hier sortiert!!
+    vlan_trunks = ansible_module.params.get("vlan_trunks") 
+    if vlan_trunks:
+        ansible_module.params["vlan_trunks"] = sorted(set(vlan_trunks), key=int)
+
+    enforce_vlan_trunks = ansible_module.params.get("enforce_vlan_trunks")    
+
     trunk_allowed_all = ansible_module.params["trunk_allowed_all"]
     native_vlan_id = ansible_module.params["native_vlan_id"]
     native_vlan_tag = ansible_module.params["native_vlan_tag"]
@@ -474,6 +540,17 @@ def main():
     port_security_recovery_time = ansible_module.params[
         "port_security_recovery_time"
     ]
+
+    port_access_onboarding_precedence = ansible_module.params[
+        "port_access_onboarding_precedence"
+    ]
+
+    precedence_check = ansible_module.params["port_access_onboarding_precedence"]
+    if precedence_check:
+      VALID_VALUES = {"device-profile", "aaa"}
+      invalid = set(precedence_check.values()) - VALID_VALUES
+      if invalid:
+          ansible_module.fail_json(msg=f"port_access_onboarding_precedence - invalid values: {sorted(invalid)} – allowed: {sorted(VALID_VALUES)}")
 
     try:
         from pyaoscx.device import Device
@@ -546,33 +623,94 @@ def main():
     if interface.was_modified():
         result["changed"] = True
 
-    if vlan_trunks:
-        if interface.vlan_mode in ["native-tagged", "native-untagged"]:
-            if state == "delete":
-                Vlan = session.api.get_module_class(session, "Vlan")
-                orig_vlan_set = set(
-                    [str(v.id) for v in interface.vlan_trunks]
-                    if interface.vlan_trunks
-                    else [str(v.id) for v in Vlan.get_all(session)]
-                )
-                new_vlan_set = orig_vlan_set - set(vlan_trunks)
-            else:
-                orig_vlan_set = set(
-                    [str(v.id) for v in interface.vlan_trunks]
-                    if interface.vlan_trunks
-                    else []
-                )
-                new_vlan_set = orig_vlan_set | set(vlan_trunks)
-            vlan_trunks = list(new_vlan_set)
-            trunk_allowed_all = vlan_trunks == []
-        elif state == "delete":
-            ansible_module.fail_json(
-                msg="Deleting VLANs on non-trunk interface {0}".format(
-                    interface.name
-                )
-            )
 
-    try:
+
+    if vlan_trunks:
+        if enforce_vlan_trunks:
+            # Hartes Syncing: Trunks exakt so setzen, wie angegeben
+            vlan_trunks = sorted(set(vlan_trunks), key=int)
+        else:
+            # Weiches Merge-Verhalten
+            if interface.vlan_mode in ["native-tagged", "native-untagged"]:
+                if state == "delete":
+                    Vlan = session.api.get_module_class(session, "Vlan")
+                    orig_vlan_set = set(
+                        [str(v.id) for v in interface.vlan_trunks]
+                        if interface.vlan_trunks
+                        else [str(v.id) for v in Vlan.get_all(session)]
+                    )
+                    new_vlan_set = orig_vlan_set - set(vlan_trunks)
+                else:
+                    orig_vlan_set = set(
+                        [str(v.id) for v in interface.vlan_trunks]
+                        if interface.vlan_trunks
+                        else []
+                    )
+                    new_vlan_set = orig_vlan_set | set(vlan_trunks)
+                vlan_trunks = list(new_vlan_set)
+                trunk_allowed_all = vlan_trunks == []
+            elif state == "delete":
+                ansible_module.fail_json(
+                    msg="Deleting VLANs on non-trunk interface {0}".format(
+                        interface.name
+                    )
+                )
+
+
+    # if vlan_trunks:
+    #     if interface.vlan_mode in ["native-tagged", "native-untagged"]:
+    #         if state == "delete":
+    #             Vlan = session.api.get_module_class(session, "Vlan")
+    #             orig_vlan_set = set(
+    #                 [str(v.id) for v in interface.vlan_trunks]
+    #                 if interface.vlan_trunks
+    #                 else [str(v.id) for v in Vlan.get_all(session)]
+    #             )
+    #             new_vlan_set = orig_vlan_set - set(vlan_trunks)
+    #         else:
+    #             orig_vlan_set = set(
+    #                 [str(v.id) for v in interface.vlan_trunks]
+    #                 if interface.vlan_trunks
+    #                 else []
+    #             )
+    #             new_vlan_set = orig_vlan_set | set(vlan_trunks)
+    #         vlan_trunks = list(new_vlan_set)
+    #         trunk_allowed_all = vlan_trunks == []
+    #     elif state == "delete":
+    #         ansible_module.fail_json(
+    #             msg="Deleting VLANs on non-trunk interface {0}".format(
+    #                 interface.name
+    #             )
+    #         )
+
+
+
+# Check Mode: Vergleiche gewünschte mit aktueller Konfiguration
+    if ansible_module.check_mode:
+        config_diff = False
+        diff = {}
+
+        for key, desired_value in ansible_module.params.items():
+            if key in IGNORED_DIFF_KEYS:
+                continue
+            current_value = getattr(interface, key, None)
+
+            if desired_value is not None:
+                current_serialized = serialize_value(current_value, key)
+                desired_serialized = serialize_value(desired_value, key)
+                
+                if current_serialized != desired_serialized:
+                    config_diff = True
+                    diff[key] = {
+                        "current": current_serialized,
+                        "desired": desired_serialized
+                    }
+
+        modified_op = config_diff
+        result["changed"] = modified_op
+        result["diff"] = diff
+    else:
+        # Nur im echten Modus anwenden
         modified_op = interface.configure_l2(
             description=description,
             vlan_mode=vlan_mode,
@@ -581,8 +719,14 @@ def main():
             trunk_allowed_all=trunk_allowed_all,
             native_vlan_tag=native_vlan_tag,
         )
-    except Exception as e:
-        ansible_module.fail_json(str(e))
+
+    if port_access_onboarding_precedence:
+        if not ansible_module.check_mode:
+            interface.port_access_onboarding_precedence = port_access_onboarding_precedence
+            modified_op |= interface.apply()
+        else:
+            if interface.port_access_onboarding_precedence != port_access_onboarding_precedence:
+                modified_op = False
 
     if port_security_enable is not None and not port_security_enable:
         modified_op |= interface.port_security_disable()
@@ -653,15 +797,24 @@ def main():
                 port_sec_kw[
                     "violation_recovery_time"
                 ] = port_security_recovery_time
+
+
         _result = False
-        try:
-            _result = interface.port_security_enable(**port_sec_kw)
-        except Exception as exc:
-            ansible_module.fail_json(msg=str(exc))
+        if not ansible_module.check_mode:
+            try:
+                _result = interface.port_security_enable(**port_sec_kw)
+            except Exception as exc:
+                ansible_module.fail_json(msg=str(exc))
+            modified_op |= _result
+        else:
+            # Simuliere Änderung
+            modified_op = True
 
         modified_op |= _result
     if modified_op:
         result["changed"] = True
+
+
 
     ansible_module.exit_json(**result)
 

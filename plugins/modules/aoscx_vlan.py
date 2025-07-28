@@ -131,188 +131,144 @@ EXAMPLES = """
 RETURN = r""" # """
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.arubanetworks.aoscx.plugins.module_utils.aoscx_pyaoscx import (  # NOQA
+from ansible_collections.arubanetworks.aoscx.plugins.module_utils.aoscx_pyaoscx import (
     get_pyaoscx_session,
 )
 
-
 def get_argument_spec():
-    argument_spec = {
-        "vlan_id": {
-            "type": "int",
-            "required": True,
-        },
-        "name": {
-            "type": "str",
-            "default": None,
-        },
-        "description": {
-            "type": "str",
-            "default": None,
-        },
-        "admin_state": {
-            "type": "str",
-            "default": None,
-            "choices": [
-                "up",
-                "down",
-            ],
-        },
+    return {
+        "vlan_id": {"type": "int", "required": True},
+        "name": {"type": "str", "default": None},
+        "description": {"type": "str", "default": None},
+        "admin_state": {"type": "str", "default": None, "choices": ["up", "down"]},
         "acl_name": {"type": "str", "required": False},
-        "acl_type": {
-            "type": "str",
-            "required": False,
-            "choices": ["ipv4", "ipv6", "mac"],
-        },
+        "acl_type": {"type": "str", "required": False, "choices": ["ipv4", "ipv6", "mac"]},
         "acl_direction": {"type": "str", "choices": ["in", "out"]},
-        "voice": {
-            "type": "bool",
-            "required": False,
-        },
-        "vsx_sync": {
-            "type": "bool",
-            "required": False,
-        },
-        "ip_igmp_snooping": {
-            "type": "bool",
-            "required": False,
-        },
-        "state": {
-            "type": "str",
-            "default": "create",
-            "choices": [
-                "create",
-                "delete",
-                "update",
-            ],
-        },
+        "voice": {"type": "bool", "required": False},
+        "vsx_sync": {"type": "bool", "required": False},
+        "ip_igmp_snooping": {"type": "bool", "required": False},
+        "state": {"type": "str", "default": "create", "choices": ["create", "delete", "update"]},
     }
-    return argument_spec
 
+def vlan_would_change(vlan, params):
+    changes = []
+    if params["name"] and vlan.name != params["name"]:
+        changes.append("name would change")
+    if params["description"] and vlan.description != params["description"]:
+        changes.append("description would change")
+    if params["admin_state"] and hasattr(vlan, "admin") and vlan.admin != params["admin_state"]:
+        changes.append("admin_state would change")
+    if params["voice"] is not None and vlan.voice != params["voice"]:
+        changes.append("voice flag would change")
+    if params["vsx_sync"] is not None:
+        target = ["all_attributes_and_dependents"] if params["vsx_sync"] else []
+        if vlan.vsx_sync != target:
+            changes.append("vsx_sync would change")
+    if params["ip_igmp_snooping"] is not None:
+        igmp = vlan.mgmd_enable.get("igmp", None)
+        if igmp != params["ip_igmp_snooping"]:
+            changes.append("IGMP snooping would change")
+    return changes
+
+
+def update_vlan_attributes(vlan, params):
+    modified = False
+
+    if params["name"]:
+        modified |= vlan.name != params["name"]
+        vlan.name = params["name"]
+    if params["description"]:
+        modified |= vlan.description != params["description"]
+        vlan.description = params["description"]
+    if params["admin_state"] and hasattr(vlan, "admin"):
+        modified |= vlan.admin != params["admin_state"]
+        vlan.admin = params["admin_state"]
+    if params["voice"] is not None:
+        modified |= vlan.voice != params["voice"]
+        vlan.voice = params["voice"]
+    if params["vsx_sync"] is not None:
+        target = ["all_attributes_and_dependents"] if params["vsx_sync"] else []
+        modified |= vlan.vsx_sync != target
+        vlan.vsx_sync = target
+    if params["ip_igmp_snooping"] is not None:
+        modified |= vlan.mgmd_enable.get("igmp", None) != params["ip_igmp_snooping"]
+        vlan.mgmd_enable["igmp"] = params["ip_igmp_snooping"]
+
+    return modified
 
 def main():
-    ansible_module = AnsibleModule(
+    module = AnsibleModule(
         argument_spec=get_argument_spec(),
         required_together=[["acl_name", "acl_type", "acl_direction"]],
         supports_check_mode=True,
     )
 
-    result = dict(changed=False)
+    result = dict(changed=False, warnings=[])
+    params = module.params
 
-    if ansible_module.check_mode:
-        ansible_module.exit_json(**result)
-
-    # Get playbook's arguments
-    vlan_id = ansible_module.params["vlan_id"]
-    vlan_name = ansible_module.params["name"]
-    description = ansible_module.params["description"]
-    admin_state = ansible_module.params["admin_state"]
-    acl_name = ansible_module.params["acl_name"]
-    acl_type = ansible_module.params["acl_type"]
-    acl_direction = ansible_module.params["acl_direction"]
-    voice = ansible_module.params["voice"]
-    vsx_sync = ansible_module.params["vsx_sync"]
-    ip_igmp_snooping = ansible_module.params["ip_igmp_snooping"]
-    state = ansible_module.params["state"]
     try:
-        session = get_pyaoscx_session(ansible_module)
+        session = get_pyaoscx_session(module)
     except Exception as e:
-        ansible_module.fail_json(
-            msg="Could not get PYAOSCX Session: {0}".format(str(e))
-        )
-    # device = Device(session)
+        module.fail_json(msg=f"Could not get PYAOSCX Session: {e}")
+
     Vlan = session.api.get_module_class(session, "Vlan")
-    vlan = Vlan(session, vlan_id, vlan_name)
-    warnings = []
-    modified = False
+    vlan = Vlan(session, params["vlan_id"], params["name"])
 
     try:
         vlan.get()
-        vlan_exists = True
+        exists = True
     except Exception:
-        vlan_exists = False
+        exists = False
 
-    if state == "delete":
-        if acl_type:
-            try:
-                vlan.clear_acl(acl_type, acl_direction)
-            except Exception as e:
-                ansible_module.fail_json(msg=str(e))
+    if module.check_mode:
+        changes = []
+        if params["state"] == "delete" and exists:
+            changes.append("VLAN would be deleted")
+        elif params["state"] == "create" and not exists:
+            changes.append("VLAN would be created")
+        elif params["state"] in ["create", "update"] and exists:
+            changes += vlan_would_change(vlan, params)
+        result["changed"] = bool(changes)
+        result["simulated_changes"] = changes
+        module.exit_json(**result)
+
+    modified = False
+
+    if params["state"] == "delete":
+        if params["acl_type"]:
+            vlan.clear_acl(params["acl_type"], params["acl_direction"])
             modified = True
-        elif vlan_exists:
+        elif exists:
             vlan.delete()
             modified = True
 
-    elif state == "update" or state == "create":
-        if not vlan_exists:
-            try:
-                if vlan_name is None:
-                    vlan.name = "VLAN{0}".format(vlan_id)
-                vlan.create()
-                modified = True
-            except Exception as e:
-                ansible_module.fail_json(msg=str(e))
 
-        if vlan_name is not None:
-            modified |= vlan.name != vlan_name
-            vlan.name = vlan_name
+    elif params["state"] == "create":
+        if not exists:
+            vlan.name = params["name"] or f"VLAN{params['vlan_id']}"
+            vlan.create()
+            modified = True
+            exists = True  # für folgenden Block wichtig
 
-        if description is not None:
-            modified |= vlan.description != description
-            vlan.description = description
-
-        if admin_state is not None:
-            if hasattr(vlan, "admin"):
-                modified |= vlan.admin != admin_state
-                vlan.admin = admin_state
-            elif admin_state == "down":
-                warnings.append(
-                    "Unable to set admin_state to down on VLAN {0}".format(
-                        vlan_id
-                    )
-                )
-
-        if voice is not None:
-            modified |= vlan.voice != voice
-            vlan.voice = voice
-
-        if vsx_sync is not None:
-            vsx_sync_all = ["all_attributes_and_dependents"]
-            if vsx_sync:
-                modified |= vlan.vsx_sync != vsx_sync_all
-                try:
-                    vlan.vsx_sync = vsx_sync_all
-                except Exception as e:
-                    ansible_module.fail_json(msg=str(e))
-            else:
-                modified |= vlan.vsx_sync != []
-                vlan.vsx_sync = []
-
-        if ip_igmp_snooping is not None:
-            modified |= (
-                "igmp" not in vlan.mgmd_enable
-                or vlan.mgmd_enable["igmp"] != ip_igmp_snooping
-            )
-            vlan.mgmd_enable["igmp"] = ip_igmp_snooping
-
-        if modified:
-            try:
+        if exists:
+            modified |= update_vlan_attributes(vlan, params)
+            if modified:
                 vlan.apply()
-            except Exception as e:
-                ansible_module.fail_json(msg=str(e))
+            if params["acl_name"]:
+                modified |= vlan.set_acl(params["acl_name"], params["acl_type"], params["acl_direction"])
 
-        if acl_name:
-            try:
-                modified |= vlan.set_acl(acl_name, acl_type, acl_direction)
-            except Exception as e:
-                ansible_module.fail_json(msg=str(e))
+    elif params["state"] == "update":
+        if not exists:
+            module.fail_json(msg=f"VLAN {params['vlan_id']} does not exist and cannot be updated")
+
+        modified |= update_vlan_attributes(vlan, params)
+        if modified:
+            vlan.apply()
+        if params["acl_name"]:
+            modified |= vlan.set_acl(params["acl_name"], params["acl_type"], params["acl_direction"])
 
     result["changed"] = modified
-    result["warnings"] = warnings
-
-    # Exit
-    ansible_module.exit_json(**result)
-
+    module.exit_json(**result)
 
 if __name__ == "__main__":
     main()
