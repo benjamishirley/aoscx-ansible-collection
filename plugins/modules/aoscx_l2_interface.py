@@ -472,11 +472,6 @@ def get_argument_spec():
         },
 
     ## New Specs
-        # "port_access_onboarding_precedence": {
-        #     "type": "list",
-        #     "elements": "str",
-        #     "choices": ["device-profile", "aaa"]
-        # }
             
         "port_access_onboarding_precedence": {
             "type": "dict",
@@ -504,8 +499,6 @@ def main():
 
     result = dict(changed=False, diff={})
 
-    # if ansible_module.check_mode:
-    #     ansible_module.exit_json(**result)
 
     interface_name = ansible_module.params["interface"]
     description = ansible_module.params["description"]
@@ -655,33 +648,6 @@ def main():
                         interface.name
                     )
                 )
-
-
-    # if vlan_trunks:
-    #     if interface.vlan_mode in ["native-tagged", "native-untagged"]:
-    #         if state == "delete":
-    #             Vlan = session.api.get_module_class(session, "Vlan")
-    #             orig_vlan_set = set(
-    #                 [str(v.id) for v in interface.vlan_trunks]
-    #                 if interface.vlan_trunks
-    #                 else [str(v.id) for v in Vlan.get_all(session)]
-    #             )
-    #             new_vlan_set = orig_vlan_set - set(vlan_trunks)
-    #         else:
-    #             orig_vlan_set = set(
-    #                 [str(v.id) for v in interface.vlan_trunks]
-    #                 if interface.vlan_trunks
-    #                 else []
-    #             )
-    #             new_vlan_set = orig_vlan_set | set(vlan_trunks)
-    #         vlan_trunks = list(new_vlan_set)
-    #         trunk_allowed_all = vlan_trunks == []
-    #     elif state == "delete":
-    #         ansible_module.fail_json(
-    #             msg="Deleting VLANs on non-trunk interface {0}".format(
-    #                 interface.name
-    #             )
-    #         )
 
 
 
