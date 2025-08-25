@@ -551,7 +551,7 @@ def get_argument_spec():
         },
         
         ## Further Nice to Configure IF Settings
-        "ip_mtu": {
+        "mtu": {
             "type": "int",
             "required": False,
             "default": None,
@@ -672,8 +672,8 @@ def main():
         "port_access_clients_limit"
     ]
 
-    ip_mtu = ansible_module.params[
-        "ip_mtu"
+    mtu = ansible_module.params[
+        "mtu"
     ]
 
 
@@ -875,11 +875,11 @@ def main():
             setattr(interface, "port_access_clients_limit", port_access_clients_limit) 
             to_set.append("port_access_clients_limit")
 
-    if ip_mtu is not None: 
-        cur = serialize_value(getattr(interface, "ip_mtu", None), "ip_mtu")
-        if cur != ip_mtu:
-            setattr(interface, "ip_mtu", ip_mtu) 
-            to_set.append("ip_mtu")
+    if mtu is not None: 
+        cur = serialize_value(getattr(interface, "mtu", None), "mtu")
+        if cur != mtu:
+            setattr(interface, "mtu", mtu) 
+            to_set.append("mtu")
 
 
 
