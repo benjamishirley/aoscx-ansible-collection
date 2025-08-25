@@ -844,9 +844,28 @@ def main():
             trunk_allowed_all=trunk_allowed_all,
             native_vlan_tag=native_vlan_tag,
             # port_access_allow_flood_traffic=port_access_allow_flood_traffic,
-            port_access_clients_limit=port_access_clients_limit
+            # port_access_clients_limit=port_access_clients_limit,
         ))
 
+
+    # --- Danach: die zwei einfachen Interface-Attribute generisch setzen ---
+    changed_simple = False
+    to_set = []
+
+    if port_access_allow_flood_traffic is not None:
+        cur = serialize_value(getattr(interface, "port_access_allow_flood_traffic", None), "port_access_allow_flood_traffic")
+        if cur != port_access_allow_flood_traffic:
+            setattr(interface, "port_access_allow_flood_traffic", port_access_allow_flood_traffic)
+            to_set.append("port_access_allow_flood_traffic")
+
+    if port_access_clients_limit is not None: 
+        cur = serialize_value(getattr(interface, "port_access_clients_limit", None), "port_access_clients_limit")
+        if cur != port_access_clients_limit:
+            setattr(interface, "port_access_clients_limit", port_access_clients_limit) 
+            to_set.append("port_access_clients_limit")
+
+    if to_set:
+        changed_simple = bool(interface.apply())
 
 
     if port_access_onboarding_precedence:
@@ -985,7 +1004,7 @@ def main():
             if port_sec_kw:
                 result["changed"] = True
 
-    if changed_l2 or changed_auth or changed_portsec or changed_precedence:
+    if changed_l2 or changed_auth or changed_portsec or changed_precedence or changed_simple:
         result["changed"] = True
 
     ansible_module.exit_json(**result)
