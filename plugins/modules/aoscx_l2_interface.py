@@ -544,7 +544,7 @@ def get_argument_spec():
             "default": None,
             
         },
-        "port_access_client_limit": {
+        "port_access_clients_limit": {
             "type": "int",
             "required": False,
             "default": None,
@@ -661,8 +661,8 @@ def main():
         "port_access_allow_flood_traffic"
     ]
 
-    port_access_client_limit = ansible_module.params[
-        "port_access_client_limit"
+    port_access_clients_limit = ansible_module.params[
+        "port_access_clients_limit"
     ]
 
 
@@ -844,7 +844,7 @@ def main():
             trunk_allowed_all=trunk_allowed_all,
             native_vlan_tag=native_vlan_tag,
             port_access_allow_flood_traffic=port_access_allow_flood_traffic,
-            port_access_client_limit=port_access_client_limit
+            port_access_clients_limit=port_access_clients_limit
         ))
 
 
