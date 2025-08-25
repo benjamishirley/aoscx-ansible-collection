@@ -920,7 +920,6 @@ def main():
             # Simuliere Änderung
             modified_op = True
 
-        modified_op |= _result
     if modified_op:
         result["changed"] = True
 
