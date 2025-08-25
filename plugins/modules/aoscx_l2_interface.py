@@ -647,6 +647,7 @@ def main():
 
     try:
         session = get_pyaoscx_session(ansible_module)
+        session.s.verify = False   
     except Exception as e:
         ansible_module.fail_json(
             msg="Could not get PYAOSCX Session: {0}".format(str(e))
