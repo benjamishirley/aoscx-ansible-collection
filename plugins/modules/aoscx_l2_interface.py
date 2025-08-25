@@ -331,6 +331,10 @@ from ansible_collections.arubanetworks.aoscx.plugins.module_utils.aoscx_pyaoscx 
     get_pyaoscx_session,
 )
 
+
+
+
+
 ############## Helpers
 
 def serialize_value(value, key=None):
@@ -382,22 +386,23 @@ def _list_auth_subresources(session, ifname):
     return resp.status_code, data
 
 def _ensure_auth_subresource(session, ifname, method):
-    # Check if subresource exists
+    # returns (ok, created)
     status, data = _list_auth_subresources(session, ifname)
     if status // 100 == 2 and method in (data or {}):
-        return True
-    # Create it
+        return True, False  # ok, not created
+
     create_path = f"system/interfaces/{quote_plus(ifname)}/port_access_auth_configurations"
     body = {"authentication_method": method}
     r = session.request("POST", create_path, data=json.dumps(body))
     if r.status_code in (200, 201):
-        return True
-    # Some systems return 500 when posting an already created resource; re-check
+        return True, True  # ok, created
+
     if r.status_code == 500:
         status2, data2 = _list_auth_subresources(session, ifname)
         if status2 // 100 == 2 and method in (data2 or {}):
-            return True
-    return False
+            # war schon da → ok, not created
+            return True, False
+    return False, False  # failed
 
 def _get_auth_config(session, ifname, method):
     # Read current subresource config to build a precise diff
@@ -585,6 +590,7 @@ def get_argument_spec():
 IGNORED_DIFF_KEYS = ["state", "interface", "enforce_vlan_trunks"]
 
 
+
 def main():
     ansible_module = AnsibleModule(
         argument_spec=get_argument_spec(), supports_check_mode=True
@@ -596,6 +602,13 @@ def main():
     description = ansible_module.params["description"]
     vlan_mode = ansible_module.params["vlan_mode"]
     vlan_access = ansible_module.params["vlan_access"]
+    
+    ### initial change vars
+    changed_l2 = False
+    changed_auth = False
+    changed_portsec = False
+    changed_precedence = False
+        
 
     # Für den Vergleich im check mode wird hier sortiert!!
     vlan_trunks = ansible_module.params.get("vlan_trunks")
@@ -788,26 +801,31 @@ def main():
         
     else:
         # only if not check mode
-        modified_op = interface.configure_l2(
+        changed_l2 = bool(interface.configure_l2(
             description=description,
             vlan_mode=vlan_mode,
             vlan_tag=vlan_tag,
             vlan_ids_list=vlan_trunks,
             trunk_allowed_all=trunk_allowed_all,
             native_vlan_tag=native_vlan_tag,
-        )
+        ))
+
+
 
     if port_access_onboarding_precedence:
-        if not ansible_module.check_mode:
-            interface.port_access_onboarding_precedence = port_access_onboarding_precedence
-            modified_op |= interface.apply()
+        if ansible_module.check_mode:
+            if interface.port_access_onboarding_precedence != port_access_onboarding_precedence:
+                result["changed"] = True
         else:
             if interface.port_access_onboarding_precedence != port_access_onboarding_precedence:
-                modified_op = False
+                interface.port_access_onboarding_precedence = port_access_onboarding_precedence
+                applied = interface.apply()
+                changed_precedence = bool(applied)
+
 
 
     # --- apply mac-auth / dot1x if provided (idempotent) ---
-    modified_auth = False
+
 
     for method, param_key, setter in (
         ("mac-auth", "mac_auth", "set_mac_auth"),
@@ -832,15 +850,21 @@ def main():
                 applied = getattr(interface, setter)(**desired_norm)
             except Exception as exc:
                 ansible_module.fail_json(msg=f"Failed to set {method} config: {exc}")
-            modified_auth |= bool(applied)
+            changed_auth |= bool(applied)
         # else: no-op → do not mark changed
 
 
 
 
+    # --- Port Security ---
+    changed_portsec = False
 
     if port_security_enable is not None and not port_security_enable:
-        modified_op |= interface.port_security_disable()
+        if ansible_module.check_mode:
+            result["changed"] = True
+        else:
+            changed_portsec |= bool(interface.port_security_disable())
+
     if port_security_enable or (
         hasattr(interface, "port_security")
         and interface.port_security["enable"]
@@ -854,12 +878,13 @@ def main():
             if port_security_macs:
                 for mac in port_security_macs:
                     mac = mac.upper()
-                    sw_static_macs = (
-                        interface.port_security_static_client_mac_addr
-                    )
+                    sw_static_macs = interface.port_security_static_client_mac_addr
                     if mac in sw_static_macs:
-                        sw_static_macs.remove(mac)
-                        modified_op |= interface.apply()
+                        if ansible_module.check_mode:
+                            result["changed"] = True
+                        else:
+                            sw_static_macs.remove(mac)
+                            changed_portsec |= bool(interface.apply())
                     else:
                         ansible_module.fail_json(
                             msg="MAC address {0} is not configured".format(mac)
@@ -867,21 +892,27 @@ def main():
             if port_security_sticky_macs:
                 for sticky_mac in port_security_sticky_macs:
                     mac = sticky_mac["mac"]
-                    sw_sticky_macs = (
-                        interface.port_security_static_sticky_client_mac_addr
-                    )
-                    sw_sticky_mac_vlans = sw_sticky_macs[mac]
+                    sw_sticky_macs = interface.port_security_static_sticky_client_mac_addr
+                    sw_sticky_mac_vlans = sw_sticky_macs.get(mac, [])
                     if mac in sw_sticky_macs:
+                        changed_here = False
                         for vlan in sticky_mac["vlans"]:
                             if vlan in sw_sticky_mac_vlans:
-                                sw_sticky_mac_vlans.remove(vlan)
-                        if sw_sticky_mac_vlans == []:
-                            del sw_sticky_macs[mac]
+                                if ansible_module.check_mode:
+                                    result["changed"] = True
+                                    changed_here = True
+                                else:
+                                    sw_sticky_mac_vlans.remove(vlan)
+                                    changed_here = True
+                        if not ansible_module.check_mode:
+                            if sw_sticky_mac_vlans == []:
+                                del sw_sticky_macs[mac]
+                            if changed_here:
+                                changed_portsec |= bool(interface.apply()))
                     else:
                         ansible_module.fail_json(
                             msg="MAC address {0} is not configured".format(mac)
                         )
-                modified_op |= interface.apply()
             if port_security_violation_action:
                 port_sec_kw["violation_action"] = "notify"
             if port_security_recovery_time:
@@ -890,24 +921,16 @@ def main():
             if port_security_client_limit:
                 port_sec_kw["client_limit"] = port_security_client_limit
             if port_security_sticky_learning is not None:
-                port_sec_kw[
-                    "sticky_mac_learning"
-                ] = port_security_sticky_learning
+                port_sec_kw["sticky_mac_learning"] = port_security_sticky_learning
             if port_security_macs:
                 port_sec_kw["allowed_mac_addr"] = port_security_macs
             if port_security_sticky_macs:
-                converted_sticky_macs = {
-                    el["mac"]: el["vlans"] for el in port_security_sticky_macs
-                }
+                converted_sticky_macs = {el["mac"]: el["vlans"] for el in port_security_sticky_macs}
                 port_sec_kw["allowed_sticky_mac_addr"] = converted_sticky_macs
             if port_security_violation_action:
-                port_sec_kw[
-                    "violation_action"
-                ] = port_security_violation_action
+                port_sec_kw["violation_action"] = port_security_violation_action
             if port_security_recovery_time:
-                port_sec_kw[
-                    "violation_recovery_time"
-                ] = port_security_recovery_time
+                port_sec_kw["violation_recovery_time"] = port_security_recovery_time
 
         _result = False
         if not ansible_module.check_mode:
@@ -915,12 +938,14 @@ def main():
                 _result = interface.port_security_enable(**port_sec_kw)
             except Exception as exc:
                 ansible_module.fail_json(msg=str(exc))
-            modified_op |= _result
+            changed_portsec |= bool(_result)
         else:
-            # Simuliere Änderung
-            modified_op = True
+            # Im Check-Mode nur signalisieren, DASS es Änderungen gäbe,
+            # wenn es überhaupt etwas zu patchen gäbe:
+            if port_sec_kw:
+                result["changed"] = True
 
-    if modified_op:
+    if changed_l2 or changed_auth or changed_portsec or changed_precedence:
         result["changed"] = True
 
     ansible_module.exit_json(**result)
