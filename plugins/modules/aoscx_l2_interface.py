@@ -5,7 +5,11 @@
 # GNU General Public License v3.0+
 # (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
+import json
 from __future__ import absolute_import, division, print_function
+from collections.abc import Iterable
+from ansible.module_utils.basic import AnsibleModule
+from urllib.parse import quote_plus
 
 __metaclass__ = type
 
@@ -323,13 +327,11 @@ EXAMPLES = """
 RETURN = r""" # """
 
 
-from ansible.module_utils.basic import AnsibleModule
-
 from ansible_collections.arubanetworks.aoscx.plugins.module_utils.aoscx_pyaoscx import (  # NOQA
     get_pyaoscx_session,
 )
 
-from collections.abc import Iterable
+############## Helpers
 
 def serialize_value(value, key=None):
 
@@ -339,7 +341,6 @@ def serialize_value(value, key=None):
     #         # Sortiert nach numerischem Schlüssel
     #         return [value[k] for k in sorted(value.keys(), key=int)]
     #     return value  # Wenn bereits Liste
-
 
     if key == "vlan_mode":
         vlan_mode_map = {
@@ -364,6 +365,52 @@ def serialize_value(value, key=None):
         return None
 
     return value
+
+
+
+def _normalize_subset(d):
+    # keep only keys with non-None values, serialize simple things
+    return {k: serialize_value(v, k) for k, v in (d or {}).items() if v is not None}
+
+def _list_auth_subresources(session, ifname):
+    path = f"system/interfaces/{quote_plus(ifname)}/port_access_auth_configurations"
+    resp = session.request("GET", path)
+    try:
+        data = json.loads(resp.text) if resp is not None else {}
+    except Exception:
+        data = {}
+    return resp.status_code, data
+
+def _ensure_auth_subresource(session, ifname, method):
+    # Check if subresource exists
+    status, data = _list_auth_subresources(session, ifname)
+    if status // 100 == 2 and method in (data or {}):
+        return True
+    # Create it
+    create_path = f"system/interfaces/{quote_plus(ifname)}/port_access_auth_configurations"
+    body = {"authentication_method": method}
+    r = session.request("POST", create_path, data=json.dumps(body))
+    if r.status_code in (200, 201):
+        return True
+    # Some systems return 500 when posting an already created resource; re-check
+    if r.status_code == 500:
+        status2, data2 = _list_auth_subresources(session, ifname)
+        if status2 // 100 == 2 and method in (data2 or {}):
+            return True
+    return False
+
+def _get_auth_config(session, ifname, method):
+    # Read current subresource config to build a precise diff
+    path = f"system/interfaces/{quote_plus(ifname)}/port_access_auth_configurations/{method}"
+    resp = session.request("GET", path)
+    if resp.status_code // 100 == 2 and resp.text:
+        try:
+            return json.loads(resp.text)
+        except Exception:
+            return {}
+    return {}
+
+
 
 
 def get_argument_spec():
@@ -471,22 +518,68 @@ def get_argument_spec():
             "default": None,
         },
 
-    ## New Specs
-            
+        # New Specs
+
         "port_access_onboarding_precedence": {
             "type": "dict",
             "default": None,
             "required": False,
         },
-        
+
         "enforce_vlan_trunks": {
             "type": "bool",
             "default": False,
             "required": False,
         },
+
+        # port-access subresources
+        "mac_auth": {
+            "type": "dict",
+            "required": False,
+            "default": None,
+            "options": {
+                "auth_enable": {"type": "bool"},
+                "cached_reauth_enable": {"type": "bool"},
+                "cached_reauth_period": {"type": "int"},
+                "canned_eap_success_enable": {"type": "bool"},
+                "discovery_period": {"type": "int"},
+                "eapol_timeout": {"type": "int"},
+                "initial_auth_response_timeout": {"type": "int"},
+                "macsec_enable": {"type": "bool"},
+                "max_requests": {"type": "int"},
+                "max_retries": {"type": "int"},
+                "mka_cak_length": {"type": "str"},  # "16" | "32"
+                "quiet_period": {"type": "int"},
+                "radius_server_group": {"type": "str"},
+                "reauth_enable": {"type": "bool"},
+                "reauth_period": {"type": "int"},
+            },
+        },
+        "dot1x": {
+            "type": "dict",
+            "required": False,
+            "default": None,
+            "options": {
+                "auth_enable": {"type": "bool"},
+                "reauth_enable": {"type": "bool"},
+                "reauth_period": {"type": "int"},
+                "quiet_period": {"type": "int"},
+                "max_retries": {"type": "int"},
+                "max_requests": {"type": "int"},
+                "eapol_timeout": {"type": "int"},
+                "initial_auth_response_timeout": {"type": "int"},
+                "radius_server_group": {"type": "str"},
+                "cached_reauth_enable": {"type": "bool"},
+                "cached_reauth_period": {"type": "int"},
+                "canned_eap_success_enable": {"type": "bool"},
+                "discovery_period": {"type": "int"},
+                "macsec_enable": {"type": "bool"},
+                "mka_cak_length": {"type": "str"},
+            },
+        },
+
     }
     return module_args
-
 
 
 IGNORED_DIFF_KEYS = ["state", "interface", "enforce_vlan_trunks"]
@@ -499,18 +592,18 @@ def main():
 
     result = dict(changed=False, diff={})
 
-
     interface_name = ansible_module.params["interface"]
     description = ansible_module.params["description"]
     vlan_mode = ansible_module.params["vlan_mode"]
     vlan_access = ansible_module.params["vlan_access"]
 
-    ## Für den Vergleich im check mode wird hier sortiert!!
-    vlan_trunks = ansible_module.params.get("vlan_trunks") 
+    # Für den Vergleich im check mode wird hier sortiert!!
+    vlan_trunks = ansible_module.params.get("vlan_trunks")
     if vlan_trunks:
-        ansible_module.params["vlan_trunks"] = sorted(set(vlan_trunks), key=int)
+        ansible_module.params["vlan_trunks"] = sorted(
+            set(vlan_trunks), key=int)
 
-    enforce_vlan_trunks = ansible_module.params.get("enforce_vlan_trunks")    
+    enforce_vlan_trunks = ansible_module.params.get("enforce_vlan_trunks")
 
     trunk_allowed_all = ansible_module.params["trunk_allowed_all"]
     native_vlan_id = ansible_module.params["native_vlan_id"]
@@ -540,10 +633,11 @@ def main():
 
     precedence_check = ansible_module.params["port_access_onboarding_precedence"]
     if precedence_check:
-      VALID_VALUES = {"device-profile", "aaa"}
-      invalid = set(precedence_check.values()) - VALID_VALUES
-      if invalid:
-          ansible_module.fail_json(msg=f"port_access_onboarding_precedence - invalid values: {sorted(invalid)} – allowed: {sorted(VALID_VALUES)}")
+        VALID_VALUES = {"device-profile", "aaa"}
+        invalid = set(precedence_check.values()) - VALID_VALUES
+        if invalid:
+            ansible_module.fail_json(
+                msg=f"port_access_onboarding_precedence - invalid values: {sorted(invalid)} – allowed: {sorted(VALID_VALUES)}")
 
     try:
         from pyaoscx.device import Device
@@ -616,8 +710,6 @@ def main():
     if interface.was_modified():
         result["changed"] = True
 
-
-
     if vlan_trunks:
         if enforce_vlan_trunks:
             # Hartes Syncing: Trunks exakt so setzen, wie angegeben
@@ -650,31 +742,49 @@ def main():
                 )
 
 
-
-# Check Mode: Vergleiche gewünschte mit aktueller Konfiguration
+# Check Mode: gewünschte vs. aktuelle Konfiguration vergleichen
     if ansible_module.check_mode:
         config_diff = False
         diff = {}
 
+        GENERIC_SKIP = set(IGNORED_DIFF_KEYS) | {"mac_auth", "dot1x"}
+
+        # 1) Generische Felder
         for key, desired_value in ansible_module.params.items():
-            if key in IGNORED_DIFF_KEYS:
+            if key in GENERIC_SKIP:
+                continue
+            if desired_value is None:
                 continue
             current_value = getattr(interface, key, None)
+            current_serialized = serialize_value(current_value, key)
+            desired_serialized = serialize_value(desired_value, key)
+            if current_serialized != desired_serialized:
+                config_diff = True
+                diff[key] = {
+                    "current": current_serialized,
+                    "desired": desired_serialized,
+                }
 
-            if desired_value is not None:
-                current_serialized = serialize_value(current_value, key)
-                desired_serialized = serialize_value(desired_value, key)
-                
-                if current_serialized != desired_serialized:
-                    config_diff = True
-                    diff[key] = {
-                        "current": current_serialized,
-                        "desired": desired_serialized
-                    }
+        # 2) Subresources (mac-auth / dot1x)
+        for method, param_key in (("mac-auth", "mac_auth"), ("dot1x", "dot1x")):
+            desired = ansible_module.params.get(param_key)
+            if not desired:
+                continue
+            current_full = _get_auth_config(session, interface_name, method)
+            desired_norm = _normalize_subset(desired)
+            current_subset = {k: serialize_value(current_full.get(k), k)
+                            for k in desired_norm.keys()}
+            if current_subset != desired_norm:
+                config_diff = True
+                diff[param_key] = {
+                    "current": current_subset,
+                    "desired": desired_norm,
+                }
 
-        modified_op = config_diff
-        result["changed"] = modified_op
+        result["changed"] = config_diff
         result["diff"] = diff
+        ansible_module.exit_json(**result)
+        
     else:
         # Nur im echten Modus anwenden
         modified_op = interface.configure_l2(
@@ -693,6 +803,40 @@ def main():
         else:
             if interface.port_access_onboarding_precedence != port_access_onboarding_precedence:
                 modified_op = False
+
+
+    # --- apply mac-auth / dot1x if provided (using new pyaoscx methods) ---
+    modified_auth = False
+
+    for method, param_key, setter in (
+        ("mac-auth", "mac_auth", "set_mac_auth"),
+        ("dot1x",   "dot1x",   "set_dot1x"),
+    ):
+        payload = ansible_module.params.get(param_key)
+        if not payload:
+            continue
+
+        # ensure subresource exists (POST) if missing
+        ok_init = _ensure_auth_subresource(session, interface_name, method)
+        if not ok_init:
+            ansible_module.fail_json(msg=f"Failed to create auth subresource '{method}' on {interface_name}")
+
+        # prune None values
+        body = _normalize_subset(payload)
+
+        try:
+            # call the new pyaoscx convenience method
+            applied = getattr(interface, setter)(**body)
+        except Exception as exc:
+            ansible_module.fail_json(msg=f"Failed to set {method} config: {exc}")
+
+        modified_auth |= bool(applied)
+
+    modified_op |= modified_auth
+
+
+
+
 
     if port_security_enable is not None and not port_security_enable:
         modified_op |= interface.port_security_disable()
@@ -764,7 +908,6 @@ def main():
                     "violation_recovery_time"
                 ] = port_security_recovery_time
 
-
         _result = False
         if not ansible_module.check_mode:
             try:
@@ -779,8 +922,6 @@ def main():
         modified_op |= _result
     if modified_op:
         result["changed"] = True
-
-
 
     ansible_module.exit_json(**result)
 
