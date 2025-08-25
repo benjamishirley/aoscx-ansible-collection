@@ -806,34 +806,34 @@ def main():
                 modified_op = False
 
 
-    # --- apply mac-auth / dot1x if provided (using new pyaoscx methods) ---
+    # --- apply mac-auth / dot1x if provided (idempotent) ---
     modified_auth = False
 
     for method, param_key, setter in (
         ("mac-auth", "mac_auth", "set_mac_auth"),
         ("dot1x",   "dot1x",   "set_dot1x"),
     ):
-        payload = ansible_module.params.get(param_key)
-        if not payload:
+        desired = ansible_module.params.get(param_key)
+        if not desired:
             continue
 
-        # ensure subresource exists (POST) if missing
-        ok_init = _ensure_auth_subresource(session, interface_name, method)
-        if not ok_init:
+        # ensure subresource exists
+        if not _ensure_auth_subresource(session, interface_name, method):
             ansible_module.fail_json(msg=f"Failed to create auth subresource '{method}' on {interface_name}")
 
-        # prune None values
-        body = _normalize_subset(payload)
+        # compare current vs desired subset
+        desired_norm = _normalize_subset(desired)
+        current_full = _get_auth_config(session, interface_name, method)
+        current_subset = {k: serialize_value(current_full.get(k), k) for k in desired_norm.keys()}
 
-        try:
-            # call the new pyaoscx convenience method
-            applied = getattr(interface, setter)(**body)
-        except Exception as exc:
-            ansible_module.fail_json(msg=f"Failed to set {method} config: {exc}")
-
-        modified_auth |= bool(applied)
-
-    modified_op |= modified_auth
+        if current_subset != desired_norm:
+            # only patch when delta exists
+            try:
+                applied = getattr(interface, setter)(**desired_norm)
+            except Exception as exc:
+                ansible_module.fail_json(msg=f"Failed to set {method} config: {exc}")
+            modified_auth |= bool(applied)
+        # else: no-op → do not mark changed
 
 
 
