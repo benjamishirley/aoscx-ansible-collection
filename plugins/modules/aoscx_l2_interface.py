@@ -763,11 +763,9 @@ def main():
 
         GENERIC_SKIP = set(IGNORED_DIFF_KEYS) | {"mac_auth", "dot1x"}
 
-        # 1) Generic Fields
+        # 1) Generic Fields (wie gehabt)
         for key, desired_value in ansible_module.params.items():
-            if key in GENERIC_SKIP:
-                continue
-            if desired_value is None:
+            if key in GENERIC_SKIP or desired_value is None:
                 continue
             current_value = getattr(interface, key, None)
             current_serialized = serialize_value(current_value, key)
@@ -779,15 +777,30 @@ def main():
                     "desired": desired_serialized,
                 }
 
-        # 2) Subresources (mac-auth / dot1x)
+        # 2) Auth-Subresources (mac-auth / dot1x), ohne POSTs im Check-Mode
+        #    -> erst Liste lesen, dann ggf. Detail lesen, nur gewünschte Keys vergleichen
         for method, param_key in (("mac-auth", "mac_auth"), ("dot1x", "dot1x")):
             desired = ansible_module.params.get(param_key)
             if not desired:
                 continue
-            current_full = _get_auth_config(session, interface_name, method)
+
             desired_norm = _normalize_subset(desired)
+
+            # Existiert das Sub-Resource?
+            status, listing = _list_auth_subresources(session, interface_name)
+            exists = (status // 100 == 2) and (method in (listing or {}))
+
+            if not exists:
+                # Würden wir anlegen -> Änderung signalisieren
+                config_diff = True
+                diff[param_key] = {"current": {}, "desired": desired_norm}
+                continue
+
+            # Sub-Resource existiert -> Detail laden und nur gewünschte Keys vergleichen
+            current_full = _get_auth_config(session, interface_name, method)
             current_subset = {k: serialize_value(current_full.get(k), k)
                             for k in desired_norm.keys()}
+
             if current_subset != desired_norm:
                 config_diff = True
                 diff[param_key] = {
