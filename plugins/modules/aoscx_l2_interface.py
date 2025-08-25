@@ -656,6 +656,15 @@ def main():
     port_access_onboarding_precedence = ansible_module.params[
         "port_access_onboarding_precedence"
     ]
+    
+    port_access_allow_flood_traffic = ansible_module.params[
+        "port_access_allow_flood_traffic"
+    ]
+
+    port_access_client_limit = ansible_module.params[
+        "port_access_client_limit"
+    ]
+
 
     precedence_check = ansible_module.params["port_access_onboarding_precedence"]
     if precedence_check:
@@ -834,6 +843,8 @@ def main():
             vlan_ids_list=vlan_trunks,
             trunk_allowed_all=trunk_allowed_all,
             native_vlan_tag=native_vlan_tag,
+            port_access_allow_flood_traffic=port_access_allow_flood_traffic,
+            port_access_client_limit=port_access_client_limit,
         ))
 
 
