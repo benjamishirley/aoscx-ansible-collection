@@ -721,8 +721,8 @@ def main():
     if isinstance(vlan_tag, str):
         vlan_tag = int(vlan_tag)
 
-    if interface.was_modified():
-        result["changed"] = True
+    # if interface.was_modified():
+    #     result["changed"] = True
 
     if vlan_trunks:
         if enforce_vlan_trunks:
@@ -849,8 +849,11 @@ def main():
             continue
 
         # ensure subresource exists
-        if not _ensure_auth_subresource(session, interface_name, method):
-            ansible_module.fail_json(msg=f"Failed to create auth subresource '{method}' on {interface_name}")
+        ok, _created = _ensure_auth_subresource(session, interface_name, method)
+        if not ok:
+            ansible_module.fail_json(
+                msg=f"Failed to create auth subresource '{method}' on {interface_name}"
+            )
 
         # compare current vs desired subset
         desired_norm = _normalize_subset(desired)
