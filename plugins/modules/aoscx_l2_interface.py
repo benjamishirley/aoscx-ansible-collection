@@ -908,7 +908,7 @@ def main():
                             if sw_sticky_mac_vlans == []:
                                 del sw_sticky_macs[mac]
                             if changed_here:
-                                changed_portsec |= bool(interface.apply()))
+                                changed_portsec |= bool(interface.apply())
                     else:
                         ansible_module.fail_json(
                             msg="MAC address {0} is not configured".format(mac)
