@@ -544,7 +544,7 @@ def get_argument_spec():
             "default": None,
             
         },
-        "port_access_clients_limit": {
+        "port_access_client_limit": {
             "type": "int",
             "required": False,
             "default": None,
