@@ -5,8 +5,8 @@
 # GNU General Public License v3.0+
 # (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
-import json
 from __future__ import absolute_import, division, print_function
+import json
 from collections.abc import Iterable
 from ansible.module_utils.basic import AnsibleModule
 from urllib.parse import quote_plus
@@ -742,14 +742,14 @@ def main():
                 )
 
 
-# Check Mode: gewünschte vs. aktuelle Konfiguration vergleichen
+    # Check Mode
     if ansible_module.check_mode:
         config_diff = False
         diff = {}
 
         GENERIC_SKIP = set(IGNORED_DIFF_KEYS) | {"mac_auth", "dot1x"}
 
-        # 1) Generische Felder
+        # 1) Generic Fields
         for key, desired_value in ansible_module.params.items():
             if key in GENERIC_SKIP:
                 continue
@@ -786,7 +786,7 @@ def main():
         ansible_module.exit_json(**result)
         
     else:
-        # Nur im echten Modus anwenden
+        # only if not check mode
         modified_op = interface.configure_l2(
             description=description,
             vlan_mode=vlan_mode,
