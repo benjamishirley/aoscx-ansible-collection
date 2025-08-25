@@ -536,6 +536,19 @@ def get_argument_spec():
             "default": False,
             "required": False,
         },
+        
+        ## SL Port-Access Required Settings
+        "port_access_allow_flood_traffic": {
+            "type": "bool",
+            "required": False,
+            "default": None,
+            
+        },
+        "port_access_clients_limit": {
+            "type": "int",
+            "required": False,
+            "default": None,
+        },
 
         # port-access subresources
         "mac_auth": {
