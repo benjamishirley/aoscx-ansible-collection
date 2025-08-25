@@ -549,6 +549,13 @@ def get_argument_spec():
             "required": False,
             "default": None,
         },
+        
+        ## Further Nice to Configure IF Settings
+        "ip_mtu": {
+            "type": "int",
+            "required": False,
+            "default": None,
+        },
 
         # port-access subresources
         "mac_auth": {
@@ -663,6 +670,10 @@ def main():
 
     port_access_clients_limit = ansible_module.params[
         "port_access_clients_limit"
+    ]
+
+    ip_mtu = ansible_module.params[
+        "ip_mtu"
     ]
 
 
@@ -848,7 +859,7 @@ def main():
         ))
 
 
-    # --- Danach: die zwei einfachen Interface-Attribute generisch setzen ---
+    # --- Danach: die einfachen Interface-Attribute generisch setzen ---
     changed_simple = False
     to_set = []
 
@@ -863,6 +874,15 @@ def main():
         if cur != port_access_clients_limit:
             setattr(interface, "port_access_clients_limit", port_access_clients_limit) 
             to_set.append("port_access_clients_limit")
+
+    if ip_mtu is not None: 
+        cur = serialize_value(getattr(interface, "ip_mtu", None), "ip_mtu")
+        if cur != ip_mtu:
+            setattr(interface, "ip_mtu", ip_mtu) 
+            to_set.append("ip_mtu")
+
+
+
 
     if to_set:
         changed_simple = bool(interface.apply())
