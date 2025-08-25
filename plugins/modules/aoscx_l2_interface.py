@@ -843,7 +843,7 @@ def main():
             vlan_ids_list=vlan_trunks,
             trunk_allowed_all=trunk_allowed_all,
             native_vlan_tag=native_vlan_tag,
-            port_access_allow_flood_traffic=port_access_allow_flood_traffic,
+            # port_access_allow_flood_traffic=port_access_allow_flood_traffic,
             port_access_clients_limit=port_access_clients_limit
         ))
 
